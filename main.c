@@ -4,7 +4,7 @@
 
 int main(void) 
 {
-  struct pfsocket* sock = pfsocket(1);
+  struct pfsocket* sock = pfsocket(2);
   if((int)sock == -1)
     return 1;
   pf_listen(sock);
@@ -34,7 +34,7 @@ struct pfsocket* pfsocket(int eth_index)
   //setsockopt(pfsock->sock, SOL_PACKET, PACKET_TX_RING, (void*)&req, sizeof(req));
 
   int size = req.tp_block_size * req.tp_block_nr;
-  void* m = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED | MAP_POPULATE, pfsock->sock, 0);
+  uint8_t* m = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED | MAP_POPULATE, pfsock->sock, 0);
   if((int)m == -1){
     printf("errno: %d\n", errno);
     return -1;
