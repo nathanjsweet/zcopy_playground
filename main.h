@@ -1,56 +1,75 @@
-
 #include <sys/socket.h>
-#include <sys/types.h>
+//
+#include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
+#include <sys/types.h>
+//
 
 #include <linux/if_packet.h>
 
-#ifdef TPACKET_V3
-#define TPACKET_VERSION TPACKET_V3
-#elif
-#define TPACKET_VERSION TPACKET_V1
-#endif
+//
+#include <linux/filter.h>
+//
+
+#include <inttypes.h>
+
+//
+#include <stdlib.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <string.h>
+#include <assert.h>
+#include <poll.h>
+//
+
+#include <errno.h>
+
+//
+#include <bits/wordsize.h>
+#include <net/ethernet.h>
+#include <net/if.h>
+#include <netinet/ip.h>
+#include <arpa/inet.h>
+//
 
 #ifndef __aligned_tpacket
-# define __aligned_tpacket__attribute__((aligned(TPACKET_ALIGNMENT)))
+# define __aligned_tpacket __attribute__((aligned(TPACKET_ALIGNMENT)))
 #endif
 
 #ifndef __align_tpacket
-# define __align_tpacket(x)__attribute__((aligned(TPACKET_ALIGN(x))))
+# define __align_tpacket(x) __attribute__((aligned(TPACKET_ALIGN(x))))
 #endif
 
-#define NUM_PACKETS100
-#define ALIGN_8(x)(((x) + 8 - 1) & ~(8 - 1))
+#define NUM_PACKETS 100
+#define ALIGN_8(x) (((x) + 8 - 1) & ~(8 - 1))
 
 union frame_map {
   struct {
     struct tpacket_hdr tp_h __aligned_tpacket;
     struct sockaddr_ll s_ll __align_tpacket(sizeof(struct tpacket_hdr));
-  } *v1;
-  struct {
-    struct tpacket2_hdr tp_h __aligned_tpacket;
-    struct sockaddr_ll s_ll __align_tpacket(sizeof(struct tpacket2_hdr));
-  } *v2;
+  } *hdr;
   void *raw;
 };
 
-typedef struct frame {
-  int frame_i;
+struct frame {
   int offset;
-  int type;
   uint8_t *mem;
-} s_frame;
+};
 
-typedef struct ring {
-  int frame_nr;
-  s_frame *frames;
-} s_ring;
-
-typedef struct pfsocket_s {
+struct pfsocket {
   int sock;
-  s_ring ring;
-} s_pfsocket;
+  int frame_nr;
+  struct frame *rx_frames;
+  struct frame *tx_frames;
+};
 
-s_pfsocket* pfsocket();
-int listen(s_pfsocket*);
+struct pfsocket* pfsocket();
+int pf_listen(struct pfsocket*);
+int user_ready(struct tpacket_hdr*);
+int set_kernel_ready(struct tpacket_hdr*);
+
+void print_mac_dest(uint8_t*);
+void print_mac_source(uint8_t*);
+void print_8(uint8_t,char*);
