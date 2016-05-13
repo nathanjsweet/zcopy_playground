@@ -2,12 +2,37 @@
 
 #include "main.h"
 
-int main(void) 
+void sock0_listener(uint8_t*, unsigned int);
+
+int main(int argc, char* argv[]) 
 {
-  struct pfsocket* sock = pfsocket(2);
-  if((int)sock == -1)
+  if(argc < 3) {
+    fprintf(stderr, "two ethernet index arguments are required\n");
     return 1;
-  pf_listen(sock);
+  }
+  int index0 = atoi(argv[1]),
+    index1 = atoi(argv[2]);
+  printf("index0 is %d:%s, index1 is %d:%s\n", index0, argv[1], index1, argv[2]);
+  struct pfsocket* sock0 = pfsocket(index0);
+  if((int)sock0 == -1){
+    fprintf(stderr, "ethernet, index %d, is invalied\n", index0);
+    return 1;
+  }
+  /*
+  struct pfsocket* sock1 = pfsocket(index1);
+  if((int)sock1 == -1){
+    fprintf(stderr, "ethernet, index %d, is invalied\n", index0);
+    return 1;
+    }*/
+  int err = pf_listen(sock0, sock0_listener);
+  fprintf(stderr, "error: %d\n", err);
+  return 0;
+}
+
+void sock0_listener(uint8_t* pay, unsigned int len)
+{
+  print_mac_dest(pay);
+  print_mac_source(pay);
 }
 
 struct pfsocket* pfsocket(int eth_index)
@@ -39,10 +64,11 @@ struct pfsocket* pfsocket(int eth_index)
     printf("errno: %d\n", errno);
     return -1;
   }
-  pfsock->frame_nr = req.tp_frame_nr * 2;
+  pfsock->frame_nr = req.tp_frame_nr;
   pfsock->rx_frames = (struct frame*)malloc(sizeof(struct frame) * req.tp_frame_nr);
-  //  pfsock->tx_frames = (struct frame*)malloc(sizeof(struct frame) * req.tp_frame_nr);
-
+  /*  pfsock->tx_frames = (struct frame*)malloc(sizeof(struct frame) * req.tp_frame_nr);
+      pfsock->last_tx_index = 0;*/
+  
   int i,t,fr_loc;
   for(i = 0; i < pfsock->frame_nr; i++) {
     fr_loc = i * req.tp_frame_size;
@@ -57,7 +83,7 @@ struct pfsocket* pfsocket(int eth_index)
   return pfsock;
 }
 
-int pf_listen(struct pfsocket* sock)
+int pf_listen(struct pfsocket* sock, void (*fx)(uint8_t*,unsigned int))
 {
   struct pollfd pfd;
 
@@ -65,22 +91,28 @@ int pf_listen(struct pfsocket* sock)
   pfd.fd = sock->sock;
   pfd.events = POLLIN | POLLERR;
   pfd.revents = 0;
+  unsigned int frame_num = 0;
+  union frame_map ppd;
+  uint8_t* pay;
   while(1) {
-    unsigned int frame_num = 0;
-    union frame_map ppd;
-    ppd.raw = sock->rx_frames[frame_num].mem;
-    uint8_t* pay = (uint8_t *)(ppd.raw + ppd.hdr->tp_h.tp_mac);
-    while(user_ready(&ppd.hdr->tp_h)){
-      print_mac_dest(pay);
-      print_mac_source(pay);
-      set_kernel_ready(&ppd.hdr->tp_h);
-      frame_num = (frame_num + 1) % sock->frame_nr;
+    while(user_ready(sock->rx_frames[frame_num].mem)){
       ppd.raw = sock->rx_frames[frame_num].mem;
       pay = (uint8_t *)(ppd.raw + ppd.hdr->tp_h.tp_mac);
+      print_mac_dest(pay);
+      print_mac_source(pay);
+      set_kernel_ready(ppd.raw);
+      frame_num = (frame_num + 1) % sock->frame_nr;
     }
-    poll(&pfd, 1, 1);
+    if(poll(&pfd, 1, 1) == -1) {
+      return errno;
+    }
   }
   return 0;
+}
+
+int pf_write(struct pfsocket* sock, uint8_t* buf, int start, int stop)
+{
+  
 }
 
 int user_ready(struct tpacket_hdr* hdr)

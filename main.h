@@ -61,12 +61,14 @@ struct frame {
 struct pfsocket {
   int sock;
   int frame_nr;
+  int last_tx_index;
   struct frame *rx_frames;
   struct frame *tx_frames;
 };
 
 struct pfsocket* pfsocket();
-int pf_listen(struct pfsocket*);
+int pf_listen(struct pfsocket*, void (*fx)(uint8_t*,unsigned int));
+int pf_write(struct pfsocket*, uint8_t*, int, int);
 int user_ready(struct tpacket_hdr*);
 int set_kernel_ready(struct tpacket_hdr*);
 
