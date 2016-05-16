@@ -34,11 +34,11 @@ void sock0_listener(uint8_t* pay, unsigned int len)
   print_mac_source(pay);
 }
 
-struct pfsocket* pfsocket(int eth_index)
+struct pfsocket* pfsocket(int eth_index, int options)
 {
   struct pfsocket* pfsock = (struct pfsocket*)malloc(sizeof(struct pfsocket));
   pfsock->sock = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-
+  
   struct tpacket_req req;
   req.tp_block_size = getpagesize() << 2;
   req.tp_frame_size = TPACKET_ALIGNMENT << 7;
@@ -52,37 +52,52 @@ struct pfsocket* pfsocket(int eth_index)
   sll.sll_protocol = htons(ETH_P_ALL);
   bind(pfsock->sock, (struct sockaddr*)&sll, sizeof(sll));
 
-  int val = TPACKET_V1;
+  int rx_enabled = options & ENABLE_RX,
+    tx_enabled = options & ENABLE_TX,
+    val = TPACKET_V1;
   setsockopt(pfsock->sock, SOL_PACKET, PACKET_VERSION, &val, sizeof(val));
-  setsockopt(pfsock->sock, SOL_PACKET, PACKET_RX_RING, (void*)&req, sizeof(req));
-  setsockopt(pfsock->sock, SOL_PACKET, PACKET_TX_RING, (void*)&req, sizeof(req));
+  if(rx_enabled)
+    setsockopt(pfsock->sock, SOL_PACKET, PACKET_RX_RING, (void*)&req, sizeof(req));
+  if(tx_enabled)
+    setsockopt(pfsock->sock, SOL_PACKET, PACKET_TX_RING, (void*)&req, sizeof(req));
 
-  int size = req.tp_block_size * req.tp_block_nr * 2;
+  int size = req.tp_block_size * req.tp_block_nr * (rx_enabled && tx_enabled ? 2 : 1);
   uint8_t* m = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED | MAP_POPULATE, pfsock->sock, 0);
   if((int)m == -1)
     return PF_ERR_SYS;
 
   pfsock->frame_nr = req.tp_frame_nr;
-  pfsock->rx_frames = (uint8_t*)malloc(sizeof(uint8_t*) * req.tp_frame_nr);
-  pfsock->tx_frames = (struct tx_frame*)malloc(sizeof(struct tx_frame) * req.tp_frame_nr);
+  if(rx_enabled)
+    pfsock->rx_frames = (uint8_t*)malloc(sizeof(uint8_t*) * req.tp_frame_nr);
+  else
+    pfsock->rx_frames = NULL;
+  if(tx_enabled)
+    pfsock->tx_frames = (struct tx_frame*)malloc(sizeof(struct tx_frame) * req.tp_frame_nr);
+  else
+    pfsock->tx_frames = NULL;
+  
   pfsock->last_tx_index = 0;
   pfsock->listening = 0;
   
   int i,t,fr_loc;
-  for(i = 0; i < pfsock->frame_nr; i++) {
-    fr_loc = i * req.tp_frame_size;
-    pfsock->rx_frames[i] = m + fr_loc;
-  }
-  for(t = 0; t < pfsock->frame_nr; t++, i++){
-    fr_loc = i * req.tp_frame_size;
-    pfsock->tx_frames[t].mem = m + fr_loc;
-    pfsock->tx_frames[t].inuse = 0;
-  }
+  if(rx_enabled)
+    for(i = 0; i < pfsock->frame_nr; i++) {
+      fr_loc = i * req.tp_frame_size;
+      pfsock->rx_frames[i] = m + fr_loc;
+    }
+  if(tx_enabled)
+    for(t = 0; t < pfsock->frame_nr; t++, i++){
+      fr_loc = i * req.tp_frame_size;
+      pfsock->tx_frames[t].mem = m + fr_loc;
+      pfsock->tx_frames[t].inuse = 0;
+    }
   return pfsock;
 }
 
 int pf_listen(struct pfsocket* sock, void (*fx)(uint8_t*,unsigned int))
 {
+  if(sock->rx_frames == NULL)
+    return PF_ERR_DISABLED;
   if(!__sync_bool_compare_and_swap(&sock->listening, 0, 1))
     return PF_ERR_LISTENING;
 
@@ -106,11 +121,12 @@ int pf_listen(struct pfsocket* sock, void (*fx)(uint8_t*,unsigned int))
       return PF_ERR_SYS;
     }
   }
-  sock->listening = 0;
 }
 
 int pf_write(struct pfsocket* sock, uint8_t* buf, int len)
 {
+  if(sock->tx_frames == NULL)
+    return PF_ERR_DISABLED;
   struct pollfd pfd;
   memset(&pfd, 0, sizeof(pfd));
   pfd.fd = sock->sock;
@@ -119,7 +135,7 @@ int pf_write(struct pfsocket* sock, uint8_t* buf, int len)
   union frame_map ppd;
   int index_acc;
   int tx_index, tries;
-  for(tries = 0; tries < 5; tries++) {
+  for(tries = 0; tries < MAX_WRITE_ATTEMPTS; tries++) {
     index_acc = 0;
     for(tx_index = _get_available_tx_index(sock, &index_acc);
 	index_acc < sock->frame_nr;
@@ -135,19 +151,23 @@ int pf_write(struct pfsocket* sock, uint8_t* buf, int len)
       }
       sock->tx_frames[tx_index].inuse = 0;
     }
-    if(poll(&pfd, 1, 1) == -1) {
+    if(poll(&pfd, 1, 1) == -1)
       return PF_ERR_SYS;
-    }
   }
-  return PF_ERR_MAX_WRITE;
+  return PF_ERR_MAX_WRITE_ATTEMPTS;
 }
 
 int _get_available_tx_index(struct pfsocket* sock, int *index_acc)
 {
   int tx_index;
-  for(tx_index = _iterate_tx_index(sock, index_acc);
+  int acc = 0;
+  for(tx_index = _iterate_tx_index(sock, &acc);
       !__sync_bool_compare_and_swap(&sock->tx_frames[tx_index].inuse, 0, 1);
-      tx_index = _iterate_tx_index(sock, index_acc));
+      tx_index = _iterate_tx_index(sock, &acc))
+    if(acc >= sock->frame_nr)
+      break;
+  if(index_acc != NULL)
+    *index_acc += acc;
   return tx_index;
 }
 
@@ -155,18 +175,19 @@ int _iterate_tx_index(struct pfsocket* sock, int *index_acc)
 {
   int tx_index = sock->last_tx_index;
   int frame_nr = sock->frame_nr;
-  if(index_acc == NULL)
-    *index_acc = 0;
+  int acc = 0;
   while(!__sync_bool_compare_and_swap(&sock->last_tx_index,
 				      tx_index,
 				      (tx_index + 1) % frame_nr)) {
     int n_index = sock->last_tx_index;
     if(n_index < tx_index)
-      *index_acc += (frame_nr - tx_index) + n_index;
+      acc += (frame_nr - tx_index) + n_index;
     else
-      *index_acc += n_index - tx_index;
+      acc += n_index - tx_index;
     tx_index = n_index;
   }
+  if(index_acc != NULL)
+    *index_acc += acc;
   return tx_index;  
 }
 

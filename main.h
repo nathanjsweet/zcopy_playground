@@ -42,11 +42,16 @@
 # define __align_tpacket(x) __attribute__((aligned(TPACKET_ALIGN(x))))
 #endif
 
-#define ALIGN_8(x) (((x) + 8 - 1) & ~(8 - 1))
 
-#define PF_ERR_SYS		-1 /* system call error; check errno */
-#define PF_ERR_LISTENING	-2 /* socket already being listened to */
-#define PF_ERR_MAX_WRITE	-3 /* socket reached maximum amount of tries to write to socket; write failure */
+#define MAX_WRITE_ATTEMPTS	3
+
+#define PF_ERR_SYS			-1 /* system call error; check errno */
+#define PF_ERR_LISTENING		-2 /* socket already being listened to */
+#define PF_ERR_MAX_WRITE_ATTEMPTS	-3 /* socket reached maximum amount of tries to write to socket; write failure */
+#define PF_ERR_DISABLED			-4 /* socket operation disabled */
+
+#define ENABLE_RX	1
+#define ENABLE_TX	2
 
 union frame_map {
   struct {
