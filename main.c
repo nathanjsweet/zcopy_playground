@@ -116,45 +116,57 @@ int pf_write(struct pfsocket* sock, uint8_t* buf, int len)
   pfd.fd = sock->sock;
   pfd.events = POLLOUT | POLLERR;
   pfd.revents = 0;
-  int tx_index = 0;
   union frame_map ppd;
-  int tries;
-  for(tries = 0; tries < sock->frame_nr; tries++) {
-    tx_index = _get_available_tx_index(sock);
-    ppd.raw = sock->tx_frames[tx_index].mem;
-    if(!kernel_ready(ppd.raw))
-      if(poll(&pfd, 1, 1) == -1) {
-	return PF_ERR_SYS;
-      } else if(kernel_ready(ppd.raw)) {
-	goto
+  int index_acc;
+  int tx_index, tries;
+  for(tries = 0; tries < 5; tries++) {
+    index_acc = 0;
+    for(tx_index = _get_available_tx_index(sock, &index_acc);
+	index_acc < sock->frame_nr;
+	tx_index = _get_available_tx_index(sock, &index_acc)) {
+      ppd.raw = sock->tx_frames[tx_index].mem;
+      if(kernel_ready(ppd.raw)) {
+	ppd.hdr->tp_h.tp_snaplen = len;
+	ppd.hdr->tp_h.tp_len = len;
+	memcpy((uint8_t *) ppd.raw + TPACKET_HDRLEN - sizeof(struct sockaddr_ll), buf, len);
+	set_user_ready(ppd.raw);
+	sock->tx_frames[tx_index].inuse = 0;
+	return len;
       }
-  write:
-      ppd.hdr->tp_h.tp_snaplen = len;
-      ppd.hdr->tp_h.tp_len = len;
-      memcpy((uint8_t *) ppd.raw + TPACKET_HDRLEN - sizeof(struct sockaddr_ll), buf, len);
-      set_user_ready(ppd.raw);
       sock->tx_frames[tx_index].inuse = 0;
-      return len;
+    }
+    if(poll(&pfd, 1, 1) == -1) {
+      return PF_ERR_SYS;
     }
   }
   return PF_ERR_MAX_WRITE;
 }
 
-int _get_available_frame_nr(struct pfsocket* sock)
+int _get_available_tx_index(struct pfsocket* sock, int *index_acc)
 {
   int tx_index;
-  for(tx_index = _iterate_tx_index(sock);
+  for(tx_index = _iterate_tx_index(sock, index_acc);
       !__sync_bool_compare_and_swap(&sock->tx_frames[tx_index].inuse, 0, 1);
-      tx_index = _iterate_tx_index(sock));
+      tx_index = _iterate_tx_index(sock, index_acc));
   return tx_index;
 }
 
-int _iterate_tx_index(struct pfsocket* sock)
+int _iterate_tx_index(struct pfsocket* sock, int *index_acc)
 {
   int tx_index = sock->last_tx_index;
+  int frame_nr = sock->frame_nr;
+  if(index_acc == NULL)
+    *index_acc = 0;
   while(!__sync_bool_compare_and_swap(&sock->last_tx_index,
 				      tx_index,
-				      (tx_index = (tx_index + 1) % sock->frame_nr)));
+				      (tx_index + 1) % frame_nr)) {
+    int n_index = sock->last_tx_index;
+    if(n_index < tx_index)
+      *index_acc += (frame_nr - tx_index) + n_index;
+    else
+      *index_acc += n_index - tx_index;
+    tx_index = n_index;
+  }
   return tx_index;  
 }
 

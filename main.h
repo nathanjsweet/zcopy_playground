@@ -77,8 +77,8 @@ void set_user_ready(struct tpacket_hdr*);
 int user_ready(struct tpacket_hdr*);
 void set_kernel_ready(struct tpacket_hdr*);
 int kernel_ready(struct tpacket_hdr*);
-int _get_available_tx_index(struct pfsocket*);
-int _iterate_tx_index(struct pfsocket*);
+int _get_available_tx_index(struct pfsocket*, int*);
+int _iterate_tx_index(struct pfsocket*, int*);
 
 void print_mac_dest(uint8_t*);
 void print_mac_source(uint8_t*);
